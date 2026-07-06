@@ -54,6 +54,8 @@ bool tof4_health
 int32 tof4_height
 ```
 
+消息包含 `std_msgs/Header header`，时间戳为主机完整接收到该串口帧的时间。
+
 ---
 
 ## 话题与参数

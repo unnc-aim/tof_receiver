@@ -2,7 +2,7 @@
 """ROS2 节点：从 ESP32 串口读取 4 路 TOF 数据并发布为 tof_receiver/TOF 消息。"""
 import rclpy
 from rclpy.node import Node
-from tof_receiver.msg import Tof
+from tof_receiver.msg import TOF
 import serial
 
 
@@ -20,7 +20,7 @@ class TofReceiverNode(Node):
         baud = self.get_parameter('baud').value
 
         # 2. 声明 ToF 话题（单条消息包含 4 条腿的高度和健康状态）
-        self.pub_tof = self.create_publisher(Tof, '/tof', 10)
+        self.pub_tof = self.create_publisher(TOF, '/tof', 10)
 
         # 3. 尝试打开物理串口
         #    timeout=0：read() 永不阻塞，配合 in_waiting + 行缓冲，
@@ -98,8 +98,10 @@ class TofReceiverNode(Node):
                         f"{id + 1}: {height} mm")
                     healths[id] = False
 
-            # 5. 封装为 Tof 消息并发布
-            msg = Tof()
+            # 5. 封装为 TOF 消息并发布
+            msg = TOF()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = 'r2_tof'
             msg.tof1_health = healths[0]
             msg.tof1_height = heights[0]
             msg.tof2_health = healths[1]
