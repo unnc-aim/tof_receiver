@@ -1,67 +1,106 @@
+/* VL53L0X with TCA9548A - Simplified detection. */
+
 #include <Wire.h>
 #include <VL53L0X.h>
 
-VL53L0X sensor;
+const uint8_t TCA_ADDR = 0x73;
+const uint8_t MAX_SENSORS = 4;
+const uint8_t SENSOR_ADDRESS = 0x29;
 
-// 每个通道传感器是否初始化成功（持久记录）
-bool initOk[4] = {false, false, false, false};
+VL53L0X sensors[MAX_SENSORS];
+bool sensorActive[MAX_SENSORS] = {false, false, false, false};
+uint8_t activeSensors = 0;
 
-// 切换 TCA9548A 通道
-void selectI2CChannel(uint8_t channel) {
+void selectChannel(uint8_t channel)
+{
   if (channel > 7) return;
-  Wire.beginTransmission(0x70);
+  Wire.beginTransmission(TCA_ADDR);
   Wire.write(1 << channel);
   Wire.endTransmission();
+  delay(10);
 }
 
-void setup() {
-  Serial.begin(115200); // 串口初始化
-  Wire.begin(21, 22);   // I2C 初始化 (21=SDA, 22=SCL)
+bool checkDevicePresent()
+{
+  Wire.beginTransmission(SENSOR_ADDRESS);
+  return Wire.endTransmission() == 0;
+}
 
-  // 初始化 4 个通道上的传感器
-  for (uint8_t i = 0; i < 4; i++) {
-    selectI2CChannel(i);
-    sensor.setTimeout(500);
-    if (sensor.init()) {
-      sensor.startContinuous();
-      initOk[i] = true;
+void setup()
+{
+  Serial.begin(115200);
+  Wire.begin();
+
+  esp_log_level_set("i2c.master", ESP_LOG_NONE);
+
+  Serial.println("\n=== VL53L0X with TCA9548A ===");
+  Serial.println("Scanning channels 0-3...\n");
+
+  for (uint8_t i = 0; i < MAX_SENSORS; i++)
+  {
+    selectChannel(i);
+
+    if (!checkDevicePresent())
+    {
+      Serial.print("✗ No device on channel ");
+      Serial.println(i);
+      continue;
+    }
+
+    sensors[i].setAddress(SENSOR_ADDRESS);
+    sensors[i].setTimeout(500);
+
+    if (sensors[i].init())
+    {
+      sensorActive[i] = true;
+      Serial.print("✓ Sensor on channel ");
+      Serial.println(i);
+      activeSensors++;
     }
     else
     {
-      initOk[i] = false;
+      Serial.print("✗ Init failed on channel ");
+      Serial.println(i);
     }
   }
-}
 
-void loop() {
-  int16_t distances[4];
-  bool health[4];
+  Serial.print("\nDetected ");
+  Serial.print(activeSensors);
+  Serial.println(" Sensors");
 
-  // 循环读取 4 路数据
-  for (uint8_t i = 0; i < 4; i++) {
-    selectI2CChannel(i);
-    distances[i] = sensor.readRangeContinuousMillimeters();
-    // 健康 = 初始化成功 且 未发生超时 且 读数合法
-    // readRangeContinuousMillimeters() 超时会返回 65535
-    // 这里 如果某一个值卡住了 readRangeCon什么玩意的 会 timeout 500ms 然后 in case 把传感器的频率压到 0.5Hz 
-    // 可以考虑要不要改 理论上 100ms 就够了，这玩意通信不能这么慢吧 @HUINAN0213
-    health[i] = initOk[i] && !sensor.timeoutOccurred() && distances[i] > 0 && distances[i] < 8000;
+  if (activeSensors == 0)
+  {
+    Serial.println("\nERROR: No sensors!");
+    while (1) {}
   }
 
-  // ── 通过物理串口发送文本 ──
-  // 格式：d0,d1,d2,d3,h0,h1,h2,h3  （前 4 个距离 mm，后 4 个健康 0/1）
-  Serial.print(distances[0]); Serial.print(",");
-  Serial.print(distances[1]); Serial.print(",");
-  Serial.print(distances[2]); Serial.print(",");
-  Serial.print(distances[3]);
-  Serial.print(",");
-  Serial.print(health[0] ? 1 : 0);
-  Serial.print(",");
-  Serial.print(health[1] ? 1 : 0);
-  Serial.print(",");
-  Serial.print(health[2] ? 1 : 0);
-  Serial.print(",");
-  Serial.println(health[3] ? 1 : 0); // 以换行符结尾
+  Serial.println("Ready.\n");
+}
 
-  delay(20); // 50Hz 的刷新率
+void loop()
+{
+  Serial.print("{\"detected\":");
+  Serial.print(activeSensors);
+  Serial.print(",\"distances\":[");
+
+  bool first = true;
+  for (uint8_t i = 0; i < MAX_SENSORS; i++)
+  {
+    if (sensorActive[i])
+    {
+      selectChannel(i);
+      uint16_t distance = sensors[i].readRangeSingleMillimeters();
+
+      if (!first) Serial.print(",");
+      first = false;
+
+      Serial.print("{\"channel\":");
+      Serial.print(i);
+      Serial.print(",\"distance\":");
+      Serial.print(distance);
+      Serial.print("}");
+    }
+  }
+
+  Serial.println("]}");
 }

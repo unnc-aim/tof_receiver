@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """ROS2 节点：从 ESP32 串口读取 4 路 TOF 数据并发布为 tof_receiver/TOF 消息。"""
+import json
 import rclpy
 from rclpy.node import Node
 from tof_receiver.msg import Tof
@@ -77,38 +78,61 @@ class TofReceiverNode(Node):
                     f"data: {e}")
 
     def _process_line(self, line):
-        """解析一行串口文本并发布为 tof_receiver/TOF 消息。"""
+        """解析一行 JSON 文本并发布为 tof_receiver/TOF 消息。"""
         line = line.strip()
         if not line:
             return
 
-        # 串口文本格式，例如 "120,450,1100,850,1,1,0,1"
-        # 前 4 个为距离(mm)，后 4 个为健康状态(0/1)
-        # self.get_logger().info(f"Raw Serial Data: '{line}'")
+        # 串口文本格式为 JSON，例如：
+        # {"detected":3,"distances":[
+        #   {"channel":0,"distance":165},
+        #   {"channel":1,"distance":170},
+        #   {"channel":2,"distance":168}]}
+        # channel(0~3) 对应 tof1~tof4，数组中出现的通道视为健康(health=True)。
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as e:
+            self.get_logger().warn(
+                f" [TOF_RECEIVER] Failed to parse JSON: {e}, raw: '{line}'")
+            return
 
-        parts = line.split(',')
-        if len(parts) == 8:
-            heights = [int(parts[i]) for i in range(4)]
-            healths = [int(parts[i]) != 0 for i in range(4, 8)]
-            for id, height in enumerate(heights):
-                # add health check of length for each leg
-                if height < 0 or height > 2000:
-                    self.get_logger().warn(
-                        f" [TOF_RECEIVER] Invalid height value for leg "
-                        f"{id + 1}: {height} mm")
-                    healths[id] = False
+        distances = data.get('distances', [])
 
-            # 5. 封装为 Tof 消息并发布
-            msg = Tof()
-            msg.tof1_health = healths[0]
-            msg.tof1_height = heights[0]
-            msg.tof2_health = healths[1]
-            msg.tof2_height = heights[1]
-            msg.tof3_health = healths[2]
-            msg.tof3_height = heights[2]
-            msg.tof4_health = healths[3]
-            msg.tof4_height = heights[3]
-            self.pub_tof.publish(msg)
+        # 初始化 4 条腿的距离和健康状态；未在 distances 中出现的通道保持不健康
+        heights = [0] * 4
+        healths = [False] * 4
+
+        for item in distances:
+            channel = item.get('channel')
+            distance = item.get('distance')
+            if channel is None or distance is None:
+                continue
+            if not (0 <= channel < 4):
+                self.get_logger().warn(
+                    f" [TOF_RECEIVER] Channel out of range: {channel}")
+                continue
+
+            heights[channel] = distance
+            healths[channel] = True
+
+            # add health check of length for each leg
+            if distance < 0 or distance > 2000:
+                self.get_logger().warn(
+                    f" [TOF_RECEIVER] Invalid height value for leg "
+                    f"{channel + 1}: {distance} mm")
+                healths[channel] = False
+
+        # 5. 封装为 Tof 消息并发布
+        msg = Tof()
+        msg.tof1_health = healths[0]
+        msg.tof1_height = heights[0]
+        msg.tof2_health = healths[1]
+        msg.tof2_height = heights[1]
+        msg.tof3_health = healths[2]
+        msg.tof3_height = heights[2]
+        msg.tof4_health = healths[3]
+        msg.tof4_height = heights[3]
+        self.pub_tof.publish(msg)
 
 
 def main(args=None):
