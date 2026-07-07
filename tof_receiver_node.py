@@ -83,14 +83,17 @@ class TofReceiverNode(Node):
         if not line:
             return
 
-        # 串口文本格式为 JSON，例如：
-        # {"detected":3,"distances":[
-        #   {"channel":0,"distance":165},
-        #   {"channel":1,"distance":170},
-        #   {"channel":2,"distance":168}]}
-        # channel(0~3) 对应 tof1~tof4，数组中出现的通道视为健康(health=True)。
+        # 串口文本格式为 JSON，例如(可能带串口监视器时间戳前缀)：
+        # 23:14:04.779 -> {"detected":4,"distances":[
+        #   {"channel":0,"distance":193,"timeout":false}, ...]}
+        # channel(0~3) 对应 tof1~tof4；timeout 字段表示该通道是否超时未测到。
+        # 截取首个 '{' 到末个 '}' 之间的内容，剥离 "时间戳 -> " 等前缀/后缀。
+        start = line.find('{')
+        end = line.rfind('}')
+        if start == -1 or end == -1 or end <= start:
+            return
         try:
-            data = json.loads(line)
+            data = json.loads(line[start:end + 1])
         except json.JSONDecodeError as e:
             self.get_logger().warn(
                 f" [TOF_RECEIVER] Failed to parse JSON: {e}, raw: '{line}'")
@@ -113,14 +116,8 @@ class TofReceiverNode(Node):
                 continue
 
             heights[channel] = distance
-            healths[channel] = True
-
-            # add health check of length for each leg
-            if distance < 0 or distance > 2000:
-                self.get_logger().warn(
-                    f" [TOF_RECEIVER] Invalid height value for leg "
-                    f"{channel + 1}: {distance} mm")
-                healths[channel] = False
+            # health 直接由 timeout 字段决定：timeout=false 健康，timeout=true 超时不健康
+            healths[channel] = not bool(item.get('timeout', False))
 
         # 5. 封装为 Tof 消息并发布
         msg = Tof()
